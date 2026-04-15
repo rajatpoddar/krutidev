@@ -14,9 +14,20 @@ let editedCells  = new Set();
 let unicodeCache = {};
 let isModified   = false;
 let docId        = CFG.docId;
+let fileId       = null;
 let shareAccess  = 'edit';
 let autoSaveTimer = null;
 let lastSaved    = null;
+let mergeCells   = {};   // { sheetName: [ {row,col,rowspan,colspan}, ... ] }
+let cellAligns   = {};   // { sheetName: { "row,col": "left"|"center"|"right" } }
+let cellFontSizes = {};  // { sheetName: { "row,col": sizeNumber } }
+let cellBold     = {};   // { sheetName: { "row,col": true } }
+let cellItalic   = {};   // { sheetName: { "row,col": true } }
+let cellUnderline= {};   // { sheetName: { "row,col": true } }
+let cellBgColors = {};   // { sheetName: { "row,col": "#rrggbb" } }
+
+// Save last known selection so ribbon buttons work after focus leaves grid
+let _lastSel     = null;
 
 // ── Socket.IO ──────────────────────────────────────────
 const socket = io({ transports: ['websocket', 'polling'] });
@@ -115,9 +126,13 @@ async function loadFile(file) {
     sheetsData      = data.sheets;
     sheetNames      = data.sheet_names;
     currentFilename = data.filename;
+    fileId          = data.file_id;
     titleInput.value = data.filename.replace(/\.[^.]+$/, '');
     document.title  = `${titleInput.value} — Krutidev Editor`;
     editedCells = new Set(); unicodeCache = {}; isModified = false;
+    mergeCells = {}; cellAligns = {}; cellFontSizes = {};
+    cellBold = {}; cellItalic = {}; cellUnderline = {}; cellBgColors = {};
+    _lastSel = null;
     renderSheetTabs(); switchSheet(sheetNames[0]); showGrid(); enableButtons();
     toast(`Loaded: ${currentFilename}`, 'success');
   } catch (e) { toast('Network error', 'error'); }
@@ -139,24 +154,56 @@ async function loadSharedDoc(id, pwd) {
     }
     if (data.error) { toast(data.error, 'error'); hideLoading(); return; }
 
-    sheetsData      = data.sheets;
-    sheetNames      = data.sheet_names;
-    currentFilename = data.title + '.xlsx';
-    titleInput.value = data.title;
-    document.title  = `${data.title} — Krutidev Editor`;
-    editedCells = new Set(); unicodeCache = {}; isModified = false;
+    // Normalise sheets — DB may return {} or [] if doc was saved empty
+    const rawSheets = data.sheets;
+    const sheets = (rawSheets && !Array.isArray(rawSheets) && typeof rawSheets === 'object')
+      ? rawSheets : {};
+    const names  = Array.isArray(data.sheet_names) && data.sheet_names.length
+      ? data.sheet_names : Object.keys(sheets);
 
-    // Disable editing if view-only
+    // If doc has no sheets at all, create a blank one so the editor isn't empty
+    if (!names.length || !Object.keys(sheets).length) {
+      const blankName = 'Sheet1';
+      const ROWS = 50, COLS = 26;
+      sheets[blankName] = {
+        rows: Array.from({ length: ROWS }, () => Array(COLS).fill('')),
+        col_widths: {}, row_count: ROWS, col_count: COLS
+      };
+      names.push(blankName);
+    }
+
+    sheetsData      = sheets;
+    sheetNames      = names;
+    currentFilename = (data.title || 'Untitled') + '.xlsx';
+    docId           = id;          // ensure docId is set for autosave
+    shareAccess     = data.access || 'edit';
+    titleInput.value = data.title || 'Untitled';
+    document.title  = `${titleInput.value} — Krutidev Editor`;
+    editedCells = new Set(); unicodeCache = {}; isModified = false;
+    mergeCells = {}; cellAligns = {}; cellFontSizes = {};
+    cellBold = {}; cellItalic = {}; cellUnderline = {}; cellBgColors = {};
+    _lastSel = null; fileId = null;
+
+    // Reflect access in CFG so initHot uses correct readOnly state
+    CFG.access = data.access || 'edit';
+
+    renderSheetTabs(); switchSheet(sheetNames[0]); showGrid(); enableButtons();
+
+    // Disable write buttons if view-only
     if (data.access === 'view') {
-      ['btnAddRow','btnDelRow','btnSave','btnConvert'].forEach(id => {
-        const el = document.getElementById(id);
+      ['btnSave','btnConvert','ribAddRow','ribDelRow','ribAddCol','ribMerge',
+       'ribAlignLeft','ribAlignCenter','ribAlignRight','ribFontSize',
+       'ribBold','ribItalic','ribUnderline','ribBgColor','ribBgColorClear'].forEach(bid => {
+        const el = document.getElementById(bid);
         if (el) { el.disabled = true; el.title = 'View-only mode'; }
       });
     }
 
-    renderSheetTabs(); switchSheet(sheetNames[0]); showGrid(); enableButtons();
     toast('Document loaded', 'success');
-  } catch (e) { toast('Failed to load document', 'error'); }
+  } catch (e) {
+    console.error('loadSharedDoc error:', e);
+    toast('Failed to load document', 'error');
+  }
   finally { hideLoading(); }
 }
 
@@ -185,25 +232,71 @@ function switchSheet(name) {
   const sheet = sheetsData[name];
   const cols  = sheet.col_count || (sheet.rows[0] ? sheet.rows[0].length : 26);
   if (hot) { hot.destroy(); hot = null; }
-  initHot(sheet.rows, cols, sheet.col_widths || {});
+
+  // Use merge_list from file (server-parsed) if mergeCells not yet populated for this sheet
+  if (!mergeCells[name] && sheet.merge_list && sheet.merge_list.length) {
+    mergeCells[name] = sheet.merge_list;
+  }
+  if (!mergeCells[name]) mergeCells[name] = [];
+
+  initHot(
+    sheet.rows, cols,
+    sheet.col_widths  || {},
+    mergeCells[name],
+    sheet.row_heights || {},
+    sheet.krutidev_cells || []
+  );
   updateStatus();
 }
 
 // ── Handsontable ───────────────────────────────────────
-function initHot(data, numCols, colWidths) {
+// krutidevCellSet: Set of "row,col" strings for cells that use a Krutidev-like font
+let _krutidevCellSet = new Set();
+
+function initHot(data, numCols, colWidths, merges, rowHeights, krutidevCells) {
   const container = document.getElementById('hot');
   const colWidthArr = Array.from({ length: numCols }, (_, i) => colWidths[colIndexToLetter(i)] || 100);
   const isReadOnly  = CFG.access === 'view';
 
+  // Build per-row height array (Handsontable uses 0-based row index)
+  // rowHeights from server is { "1": px, "2": px, ... } (1-based)
+  const rowHeightArr = [];
+  const numRows = data.length;
+  for (let r = 0; r < numRows; r++) {
+    const h = rowHeights[String(r + 1)];
+    rowHeightArr.push(h ? Math.max(h, 18) : 24);
+  }
+
+  // Build krutidev cell set for this sheet
+  _krutidevCellSet = new Set(krutidevCells || []);
+
   hot = new Handsontable(container, {
     data, rowHeaders: true, colHeaders: true,
-    contextMenu: !isReadOnly, manualColumnResize: true, manualRowResize: true,
+    contextMenu: !isReadOnly ? {
+      items: {
+        'row_above': { name: 'Insert row above' },
+        'row_below': { name: 'Insert row below' },
+        'col_left':  { name: 'Insert column left' },
+        'col_right': { name: 'Insert column right' },
+        'hsep1': '---------',
+        'remove_row':    { name: 'Remove row' },
+        'remove_col':    { name: 'Remove column' },
+        'hsep2': '---------',
+        'mergeCells':    { name: 'Merge cells' },
+        'hsep3': '---------',
+        'copy':  { name: 'Copy' },
+        'cut':   { name: 'Cut' },
+      }
+    } : false,
+    manualColumnResize: true, manualRowResize: true,
     copyPaste: true, undo: !isReadOnly,
-    colWidths: colWidthArr, rowHeights: 24,
-    stretchH: 'none', wordWrap: false,
+    colWidths: colWidthArr,
+    rowHeights: rowHeightArr,
+    stretchH: 'none', wordWrap: true,
     readOnly: isReadOnly,
+    mergeCells: merges && merges.length ? merges : [],
     licenseKey: 'non-commercial-and-evaluation',
-    cells() { return { renderer: cellRenderer }; },
+    cells(row, col) { return { renderer: cellRenderer }; },
 
     afterChange(changes, source) {
       if (!changes || source === 'loadData' || source === 'remote') return;
@@ -212,7 +305,6 @@ function initHot(data, numCols, colWidths) {
         editedCells.add(`${row},${col}`);
         delete unicodeCache[`${activeSheet}:${row},${col}`];
         isModified = true;
-        // Emit to collaborators
         if (docId) {
           socket.emit('cell_change', { doc_id: docId, sheet: activeSheet, row, col, value: newVal });
         }
@@ -220,15 +312,49 @@ function initHot(data, numCols, colWidths) {
       updateStatus(); updateStatusEdited(); scheduleAutoSave();
     },
 
-    afterSelectionEnd(r1, c1) {
+    afterMergeCells(cellRange, mergeParent) {
+      if (!mergeCells[activeSheet]) mergeCells[activeSheet] = [];
+      mergeCells[activeSheet].push({
+        row: mergeParent.row, col: mergeParent.col,
+        rowspan: mergeParent.rowspan, colspan: mergeParent.colspan
+      });
+      isModified = true; updateStatusEdited();
+      updateMergeBtn();
+    },
+
+    afterUnmergeCells(cellRange) {
+      if (mergeCells[activeSheet]) {
+        const sel = hot.getSelected();
+        if (sel) {
+          const [r1, c1] = sel[0];
+          mergeCells[activeSheet] = mergeCells[activeSheet].filter(
+            m => !(m.row === r1 && m.col === c1)
+          );
+        }
+      }
+      isModified = true; updateStatusEdited();
+      updateMergeBtn();
+    },
+
+    afterSelectionEnd(r1, c1, r2, c2) {
+      _lastSel = [r1, c1, r2, c2];
       const cl = colIndexToLetter(c1);
       cellRef.textContent = `${cl}${r1 + 1}`;
       formulaInput.value = String(hot.getDataAtCell(r1, c1) ?? '');
       statusCells.textContent = `${cl}${r1 + 1}`;
       if (docId) socket.emit('cursor_move', { doc_id: docId, row: r1, col: c1 });
+      updateMergeBtn();
+      updateAlignBtns(r1, c1);
+      updateFontSizeInput(r1, c1);
+      updateFormatBtns(r1, c1);
     },
 
-    afterDeselect() { cellRef.textContent = ''; formulaInput.value = ''; statusCells.textContent = 'Ready'; },
+    afterDeselect() {
+      // Don't clear _lastSel — keep it so ribbon buttons still work
+      cellRef.textContent = ''; formulaInput.value = ''; statusCells.textContent = 'Ready';
+      updateMergeBtn();
+      updateAlignBtns(-1, -1);
+    },
   });
 
   formulaInput.addEventListener('keydown', e => {
@@ -243,12 +369,49 @@ function initHot(data, numCols, colWidths) {
 // ── Cell renderer ──────────────────────────────────────
 function cellRenderer(instance, td, row, col, prop, value, cellProperties) {
   Handsontable.renderers.TextRenderer.apply(this, arguments);
-  if (editedCells.has(`${row},${col}`)) td.classList.add('cell-edited');
+
+  const key = `${row},${col}`;
+
+  // Edited highlight
+  if (editedCells.has(key)) td.classList.add('cell-edited');
+
+  // Text alignment
+  const align = (cellAligns[activeSheet] || {})[key];
+  if (align) td.style.textAlign = align;
+
+  // Background color
+  const bg = (cellBgColors[activeSheet] || {})[key];
+  if (bg) td.style.backgroundColor = bg;
+
+  // Bold / Italic / Underline
+  const isBold      = (cellBold[activeSheet]      || {})[key];
+  const isItalic    = (cellItalic[activeSheet]     || {})[key];
+  const isUnderline = (cellUnderline[activeSheet]  || {})[key];
+  td.style.fontWeight     = isBold      ? 'bold'      : '';
+  td.style.fontStyle      = isItalic    ? 'italic'    : '';
+  td.style.textDecoration = isUnderline ? 'underline' : '';
+
+  // Custom font size — must override CSS class rules
+  const customSize = (cellFontSizes[activeSheet] || {})[key];
+  const isKrutidevCell = _krutidevCellSet.has(key);
+
   if (fontMode === 'unicode' && value && typeof value === 'string') {
     const k = `${activeSheet}:${row},${col}`;
     if (!unicodeCache[k]) unicodeCache[k] = clientKrutidevToUnicode(value);
     td.textContent = unicodeCache[k];
+    td.style.fontFamily = "'Noto Sans Devanagari','Mangal','Arial Unicode MS',sans-serif";
+    td.style.fontSize   = (customSize || 13) + 'px';
+  } else if (isKrutidevCell) {
+    td.style.fontFamily = "'KrutiDev','Kruti Dev 010',serif";
+    td.style.fontSize   = (customSize || 14) + 'px';
+  } else {
+    td.style.fontFamily = '';
+    td.style.fontSize   = customSize ? customSize + 'px' : '';
   }
+
+  // Clip overflow — prevent merged cell text bleeding
+  td.style.overflow   = 'hidden';
+  td.style.whiteSpace = 'pre-wrap';
 }
 
 // ── Font mode ──────────────────────────────────────────
@@ -266,7 +429,7 @@ function applyFontClass() {
   a.classList.toggle('font-unicode',  fontMode === 'unicode');
 }
 
-// ── Add / Delete rows ──────────────────────────────────
+// ── Add / Delete rows & cols ───────────────────────────
 function addRow() {
   if (!hot) return;
   hot.alter('insert_row_below', hot.countRows() - 1);
@@ -281,14 +444,225 @@ function deleteSelectedRows() {
   [...rows].sort((a,b) => b-a).forEach(r => hot.alter('remove_row', r));
   isModified = true; updateStatus(); toast(`${rows.size} row(s) deleted`, 'success', 1500);
 }
+function addCol() {
+  if (!hot) return;
+  hot.alter('insert_col_end');
+  isModified = true; updateStatus(); toast('Column added', 'success', 1500);
+}
+
+// ── Merge cells ────────────────────────────────────────
+function toggleMergeCells() {
+  if (!hot) return;
+  // Use current selection or fall back to last known selection
+  const sel = hot.getSelected() || (_lastSel ? [[..._lastSel]] : null);
+  if (!sel || sel.length === 0) { toast('Pehle cells select karein', 'warning'); return; }
+  const [r1, c1, r2, c2] = sel[0];
+  const rMin = Math.min(r1, r2), rMax = Math.max(r1, r2);
+  const cMin = Math.min(c1, c2), cMax = Math.max(c1, c2);
+  if (rMin === rMax && cMin === cMax) { toast('Merge ke liye multiple cells select karein', 'warning'); return; }
+
+  // Re-focus grid so Handsontable plugin works correctly
+  hot.selectCell(rMin, cMin, rMax, cMax);
+
+  // Check if already merged
+  const existing = (mergeCells[activeSheet] || []).find(
+    m => m.row === rMin && m.col === cMin
+  );
+  if (existing) {
+    hot.getPlugin('mergeCells').unmerge(rMin, cMin, rMax, cMax);
+    toast('Cells unmerged', 'success', 1500);
+  } else {
+    hot.getPlugin('mergeCells').merge(rMin, cMin, rMax, cMax);
+    toast(`${rMax - rMin + 1}×${cMax - cMin + 1} cells merged`, 'success', 1500);
+  }
+  isModified = true; updateStatusEdited(); updateMergeBtn();
+}
+
+function updateMergeBtn() {
+  const btn = document.getElementById('ribMerge');
+  if (!btn || !hot) return;
+  const sel = hot.getSelected();
+  if (!sel) { btn.classList.remove('active'); return; }
+  const [r1, c1, r2, c2] = sel[0];
+  const rMin = Math.min(r1, r2), cMin = Math.min(c1, c2);
+  const isMerged = (mergeCells[activeSheet] || []).some(
+    m => m.row === rMin && m.col === cMin && (m.rowspan > 1 || m.colspan > 1)
+  );
+  btn.classList.toggle('active', isMerged);
+  btn.textContent = isMerged ? '⊞ Unmerge' : '⊞ Merge';
+}
+
+// ── Text alignment ─────────────────────────────────────
+function setAlign(align) {
+  if (!hot) return;
+  // Use current or last known selection
+  const sel = hot.getSelected() || (_lastSel ? [[..._lastSel]] : null);
+  if (!sel) { toast('Pehle cells select karein', 'warning'); return; }
+  if (!cellAligns[activeSheet]) cellAligns[activeSheet] = {};
+  sel.forEach(([r1, c1, r2, c2]) => {
+    const rMin = Math.min(r1, r2), rMax = Math.max(r1, r2);
+    const cMin = Math.min(c1, c2), cMax = Math.max(c1, c2);
+    for (let r = rMin; r <= rMax; r++) {
+      for (let c = cMin; c <= cMax; c++) {
+        cellAligns[activeSheet][`${r},${c}`] = align;
+      }
+    }
+  });
+  hot.render();
+  isModified = true; updateStatusEdited();
+  const ref = sel[0];
+  updateAlignBtns(ref[0], ref[1]);
+}
+
+function updateAlignBtns(row, col) {
+  const align = row >= 0 ? ((cellAligns[activeSheet] || {})[`${row},${col}`] || '') : '';
+  ['left','center','right'].forEach(a => {
+    const btn = document.getElementById(`ribAlign${a.charAt(0).toUpperCase() + a.slice(1)}`);
+    if (btn) btn.classList.toggle('active', align === a);
+  });
+}
+
+// ── Font size ──────────────────────────────────────────
+function setFontSize(size) {
+  if (!hot) return;
+  const sz = parseInt(size, 10);
+  if (!sz || sz < 6 || sz > 96) return;
+  const sel = hot.getSelected() || (_lastSel ? [[..._lastSel]] : null);
+  if (!sel) return;
+  if (!cellFontSizes[activeSheet]) cellFontSizes[activeSheet] = {};
+  sel.forEach(([r1, c1, r2, c2]) => {
+    const rMin = Math.min(r1, r2), rMax = Math.max(r1, r2);
+    const cMin = Math.min(c1, c2), cMax = Math.max(c1, c2);
+    for (let r = rMin; r <= rMax; r++) {
+      for (let c = cMin; c <= cMax; c++) {
+        cellFontSizes[activeSheet][`${r},${c}`] = sz;
+      }
+    }
+  });
+  hot.render();
+  isModified = true; updateStatusEdited();
+}
+
+function updateFontSizeInput(row, col) {
+  const inp = document.getElementById('ribFontSize');
+  if (!inp) return;
+  const sz = (cellFontSizes[activeSheet] || {})[`${row},${col}`];
+  inp.value = sz || '';
+  inp.placeholder = fontMode === 'krutidev' ? '14' : '13';
+}
+
+// ── Bold / Italic / Underline ──────────────────────────
+function _applyStyleToSelection(stateObj, btnId) {
+  if (!hot) return;
+  const sel = hot.getSelected() || (_lastSel ? [[..._lastSel]] : null);
+  if (!sel) return;
+  if (!stateObj[activeSheet]) stateObj[activeSheet] = {};
+  // Toggle: if ALL selected cells already have it, remove; else apply
+  let allOn = true;
+  sel.forEach(([r1,c1,r2,c2]) => {
+    for (let r = Math.min(r1,r2); r <= Math.max(r1,r2); r++)
+      for (let c = Math.min(c1,c2); c <= Math.max(c1,c2); c++)
+        if (!stateObj[activeSheet][`${r},${c}`]) allOn = false;
+  });
+  sel.forEach(([r1,c1,r2,c2]) => {
+    for (let r = Math.min(r1,r2); r <= Math.max(r1,r2); r++)
+      for (let c = Math.min(c1,c2); c <= Math.max(c1,c2); c++)
+        stateObj[activeSheet][`${r},${c}`] = !allOn;
+  });
+  hot.render();
+  isModified = true; updateStatusEdited();
+  const btn = document.getElementById(btnId);
+  if (btn) btn.classList.toggle('active', !allOn);
+}
+
+function toggleBold()      { _applyStyleToSelection(cellBold,      'ribBold'); }
+function toggleItalic()    { _applyStyleToSelection(cellItalic,    'ribItalic'); }
+function toggleUnderline() { _applyStyleToSelection(cellUnderline, 'ribUnderline'); }
+
+function updateFormatBtns(row, col) {
+  const key = `${row},${col}`;
+  const b = document.getElementById('ribBold');
+  const i = document.getElementById('ribItalic');
+  const u = document.getElementById('ribUnderline');
+  if (b) b.classList.toggle('active', !!(cellBold[activeSheet]      || {})[key]);
+  if (i) i.classList.toggle('active', !!(cellItalic[activeSheet]    || {})[key]);
+  if (u) u.classList.toggle('active', !!(cellUnderline[activeSheet] || {})[key]);
+}
+
+// ── Cell background color ──────────────────────────────
+function setCellBgColor(color) {
+  if (!hot) return;
+  const sel = hot.getSelected() || (_lastSel ? [[..._lastSel]] : null);
+  if (!sel) return;
+  if (!cellBgColors[activeSheet]) cellBgColors[activeSheet] = {};
+  sel.forEach(([r1,c1,r2,c2]) => {
+    for (let r = Math.min(r1,r2); r <= Math.max(r1,r2); r++)
+      for (let c = Math.min(c1,c2); c <= Math.max(c1,c2); c++)
+        cellBgColors[activeSheet][`${r},${c}`] = color === 'none' ? '' : color;
+  });
+  hot.render();
+  isModified = true; updateStatusEdited();
+}
+function openNewSheetModal() {
+  document.getElementById('newSheetModal').style.display = 'flex';
+}
+function closeNewSheetModal(e) {
+  if (!e || e.target === document.getElementById('newSheetModal'))
+    document.getElementById('newSheetModal').style.display = 'none';
+}
+
+function createNewSheet(fontType) {
+  document.getElementById('newSheetModal').style.display = 'none';
+
+  // Build a blank 50×26 grid
+  const ROWS = 50, COLS = 26;
+  const rows = Array.from({ length: ROWS }, () => Array(COLS).fill(''));
+  const colWidths = {};
+  for (let i = 0; i < COLS; i++) colWidths[colIndexToLetter(i)] = 100;
+
+  // Pick a unique sheet name
+  let baseName = 'Sheet', idx = sheetNames.length + 1;
+  while (sheetNames.includes(baseName + idx)) idx++;
+  const name = baseName + idx;
+
+  sheetsData[name] = { rows, col_widths: colWidths, row_count: ROWS, col_count: COLS };
+  sheetNames.push(name);
+  mergeCells[name]    = [];
+  cellAligns[name]    = {};
+  cellFontSizes[name] = {};
+  cellBold[name]      = {};
+  cellItalic[name]    = {};
+  cellUnderline[name] = {};
+  cellBgColors[name]  = {};
+
+  // Set font mode based on choice
+  if (fontType === 'krutidev') setFont('krutidev');
+  else if (fontType === 'unicode') setFont('unicode');
+  else setFont('krutidev'); // blank/english default
+
+  showGrid(); enableButtons();
+  switchSheet(name);
+  isModified = true; updateStatusEdited();
+  toast(`New sheet "${name}" created`, 'success', 2000);
+}
 
 // ── Save / Download ────────────────────────────────────
 async function saveFile(convertMode) {
   if (!hot || !activeSheet) return;
   sheetsData[activeSheet].rows = hot.getData();
   showLoading(convertMode ? 'Converting...' : 'Preparing download...');
-  const payload = { filename: currentFilename, convert: convertMode, sheets: {} };
-  sheetNames.forEach(n => { payload.sheets[n] = { rows: sheetsData[n].rows }; });
+  const payload = {
+    filename: currentFilename,
+    convert: convertMode,
+    file_id: fileId,
+    sheets: {}
+  };
+  sheetNames.forEach(n => {
+    payload.sheets[n] = {
+      rows: sheetsData[n].rows,
+      merge_cells: mergeCells[n] || []
+    };
+  });
   try {
     const res = await fetch('/api/save', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -322,7 +696,8 @@ async function autoSave() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         doc_id: docId, title: titleInput.value,
-        sheets: sheetsData, sheet_names: sheetNames, access: shareAccess
+        sheets: sheetsData, sheet_names: sheetNames,
+        access: shareAccess, file_id: fileId
       })
     });
     if (res.ok) {
@@ -368,7 +743,8 @@ async function generateLink() {
       body: JSON.stringify({
         doc_id: docId, title: titleInput.value,
         sheets: sheetsData, sheet_names: sheetNames,
-        access: shareAccess, password: pwd || null
+        access: shareAccess, password: pwd || null,
+        file_id: fileId
       })
     });
     const data = await res.json();
@@ -439,6 +815,9 @@ function doReplaceAll() {
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); toggleSearch(); }
   if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (hot) saveFile(false); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'b') { e.preventDefault(); if (hot) toggleBold(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'i') { e.preventDefault(); if (hot) toggleItalic(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'u') { e.preventDefault(); if (hot) toggleUnderline(); }
   if (e.key === 'Escape') searchBar.style.display = 'none';
 });
 
@@ -467,16 +846,25 @@ function showGrid() {
   sheetTabsBar.style.display  = 'flex';
   formulaBar.style.display    = 'flex';
   statusBar.style.display     = 'flex';
+  document.getElementById('ribbon').style.display = 'flex';
 }
 function showLoading(msg) { loadingText.textContent = msg || 'Loading...'; loadingOverlay.style.display = 'flex'; }
 function hideLoading()    { loadingOverlay.style.display = 'none'; }
 function enableButtons()  {
-  ['btnAddRow','btnDelRow','btnSave','btnConvert','btnShare'].forEach(id => {
+  ['btnSave','btnConvert','btnShare'].forEach(id => {
     const el = document.getElementById(id);
     if (el && CFG.access !== 'view') el.disabled = false;
   });
+  // Always enable share
   const share = document.getElementById('btnShare');
-  if (share) share.disabled = false; // share always enabled
+  if (share) share.disabled = false;
+  // Ribbon buttons
+  ['ribAddRow','ribDelRow','ribAddCol','ribMerge',
+   'ribAlignLeft','ribAlignCenter','ribAlignRight',
+   'ribFontSize','ribBold','ribItalic','ribUnderline','ribBgColor','ribBgColorClear'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && CFG.access !== 'view') el.disabled = false;
+  });
 }
 function colIndexToLetter(idx) {
   let s = ''; idx++;
@@ -528,6 +916,15 @@ function clientKrutidevToUnicode(text) {
 // ── Init ───────────────────────────────────────────────
 window.addEventListener('beforeunload', e => { if (isModified) { e.preventDefault(); e.returnValue = ''; } });
 
-if (docId) {
+// Hide ribbon initially (shown when grid is active)
+document.getElementById('ribbon').style.display = 'none';
+
+// Check URL params for new sheet preset
+const _urlParams = new URLSearchParams(window.location.search);
+const _newPreset = _urlParams.get('new');
+if (_newPreset) {
+  // Auto-open new sheet modal or create directly
+  setTimeout(() => openNewSheetModal(), 100);
+} else if (docId) {
   loadSharedDoc(docId);
 }

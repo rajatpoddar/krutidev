@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  krutidev:
+    build: .
+    container_name: krutidev-studio
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      # Persistent SQLite database
+      - krutidev_data:/app/data
+      # Persistent uploads (source files for format preservation)
+      - krutidev_uploads:/app/uploads
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  krutidev_data:
+  krutidev_uploads:

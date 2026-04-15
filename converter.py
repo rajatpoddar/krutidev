@@ -438,3 +438,44 @@ def krutidev_to_unicode(text: str) -> str:
         text = text.replace(f'\uE001{idx}\uE001', original)
 
     return text
+
+
+# ---------------------------------------------------------------------------
+# Unicode → Krutidev (reverse mapping)
+# ---------------------------------------------------------------------------
+
+# Build reverse lookup from K2U (unicode → krutidev), longest unicode first
+_U2K: list = []
+_seen_uni: set = set()
+for _kd, _uni in reversed(K2U):
+    if _uni and _uni not in _seen_uni and len(_uni) >= 1:
+        _seen_uni.add(_uni)
+        _U2K.append((_uni, _kd))
+# Sort longest unicode sequence first for greedy match
+_U2K.sort(key=lambda x: -len(x[0]))
+
+
+def unicode_to_krutidev(text: str) -> str:
+    """
+    Approximate reverse conversion: Unicode Devanagari → Krutidev encoding.
+    Note: this is a best-effort reverse; some conjuncts may not round-trip perfectly.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        matched = False
+        for uni, kd in _U2K:
+            end = i + len(uni)
+            if text[i:end] == uni:
+                out.append(kd)
+                i = end
+                matched = True
+                break
+        if not matched:
+            out.append(text[i])
+            i += 1
+    return ''.join(out)

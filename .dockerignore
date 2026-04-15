@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+*.md
+uploads/
+data/
+.env
+.env.example

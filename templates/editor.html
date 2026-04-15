@@ -1,15 +1,47 @@
 <!DOCTYPE html>
-<html lang="hi" data-theme="light">
+<html lang="hi-IN" data-theme="light">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>{{ title or 'Krutidev Editor' }}</title>
+  <title>{{ title or 'Online Hindi Spreadsheet Editor' }} — Krutidev Studio</title>
+  <meta name="description" content="Free online Hindi spreadsheet editor. Open, edit and convert Krutidev Excel files to Unicode. Merge cells, share sheets, real-time collaboration. No signup."/>
+  <meta name="robots" content="index, follow"/>
+  <link rel="canonical" href="https://krutidevstudio.com/editor"/>
 
+  <!-- Open Graph -->
+  <meta property="og:title" content="Online Hindi Spreadsheet Editor — Krutidev Studio"/>
+  <meta property="og:description" content="Edit Krutidev Excel files online. Convert to Unicode, merge cells, share with collaborators. Free, no signup."/>
+  <meta property="og:url" content="https://krutidevstudio.com/editor"/>
+  <meta property="og:type" content="website"/>
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Krutidev Online Spreadsheet Editor",
+    "url": "https://krutidevstudio.com/editor",
+    "description": "Free online spreadsheet editor for Hindi Krutidev and Unicode Excel files. Edit, convert, merge cells and share.",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "Any",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "INR" },
+    "isAccessibleForFree": true
+  }
+  </script>
+
+  <!-- Performance -->
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css" as="style"/>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
-  <link rel="stylesheet" href="/static/editor.css"/>
+  <link rel="preload" href="/static/fonts/KrutiDev010.ttf" as="font" type="font/truetype" crossorigin="anonymous"/>
+  <link rel="stylesheet" href="/static/editor.css?v=69e01337"/>
+
+  <!-- ═══ FAVICON ═══ -->
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico"/>
+  <link rel="shortcut icon" href="/static/favicon.ico"/>
+  <link rel="apple-touch-icon" href="/static/logo.png"/>
   <style>
     @font-face {
       font-family: 'KrutiDev';
@@ -46,7 +78,7 @@
           <input id="shareLink" type="text" readonly class="share-link-input"/>
           <button onclick="copyLink()" class="btn-copy">Copy</button>
         </div>
-        <p class="share-hint">Anyone with this link can {{ 'edit' if access == 'edit' else 'view' }} this sheet.</p>
+        <p class="share-hint">Anyone with this link can access this sheet.</p>
       </div>
     </div>
   </div>
@@ -64,11 +96,43 @@
   </div>
 </div>
 
+<!-- ── NEW SHEET FONT MODAL ── -->
+<div class="modal-overlay" id="newSheetModal" style="display:none" onclick="closeNewSheetModal(event)">
+  <div class="modal font-choice-modal">
+    <div class="modal-header">
+      <h3>New Sheet — Choose Font</h3>
+      <button class="modal-close" onclick="closeNewSheetModal()">✕</button>
+    </div>
+    <div class="font-choices">
+      <button class="font-choice-btn" onclick="createNewSheet('krutidev')">
+        <span class="preview" style="font-family:'KrutiDev',serif;">dEI</span>
+        <span class="label">Krutidev</span>
+        <span class="sublabel">Legacy Hindi font</span>
+      </button>
+      <button class="font-choice-btn" onclick="createNewSheet('unicode')">
+        <span class="preview">क</span>
+        <span class="label">Unicode</span>
+        <span class="sublabel">Standard Devanagari</span>
+      </button>
+      <button class="font-choice-btn" onclick="createNewSheet('english')">
+        <span class="preview">Aa</span>
+        <span class="label">English</span>
+        <span class="sublabel">Latin / Numbers</span>
+      </button>
+      <button class="font-choice-btn" onclick="createNewSheet('blank')">
+        <span class="preview">⬜</span>
+        <span class="label">Blank</span>
+        <span class="sublabel">No preset font</span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ── TOPBAR ── -->
 <header class="topbar">
   <div class="topbar-left">
-    <a href="/" class="brand">
-      <span class="brand-k">क</span><span class="brand-arrow">→</span><span class="brand-u">क</span>
+    <a href="/" class="brand" aria-label="Krutidev Studio - Home">
+      <img src="/static/logo.png" alt="Krutidev Studio" class="nav-logo-img"/>
     </a>
     <input class="filename-input" id="titleInput" type="text"
            value="{{ title or 'Untitled' }}" spellcheck="false"
@@ -87,18 +151,16 @@
     </div>
     <div class="toolbar-sep"></div>
     <button class="tb-btn" onclick="triggerUpload()" title="Upload Excel">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       Upload
     </button>
-    <button class="tb-btn" id="btnAddRow" onclick="addRow()" disabled>+ Row</button>
-    <button class="tb-btn" id="btnDelRow" onclick="deleteSelectedRows()" disabled>− Row</button>
     <div class="toolbar-sep"></div>
     <button class="tb-btn tb-btn-share" id="btnShare" onclick="openShareModal()" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
       Share
     </button>
     <button class="tb-btn tb-btn-save" id="btnSave" onclick="saveFile(false)" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Save
     </button>
     <button class="tb-btn tb-btn-convert" id="btnConvert" onclick="saveFile(true)" disabled>⇄ Convert</button>
@@ -106,22 +168,88 @@
   </div>
 </header>
 
+<!-- ── RIBBON ── -->
+<div class="ribbon" id="ribbon">
+  <!-- Row/Col -->
+  <button class="rib-btn" id="ribAddRow" onclick="addRow()" disabled title="Add row below">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Row
+  </button>
+  <button class="rib-btn" id="ribDelRow" onclick="deleteSelectedRows()" disabled title="Delete selected rows">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Del Row
+  </button>
+  <button class="rib-btn" id="ribAddCol" onclick="addCol()" disabled title="Add column">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Col
+  </button>
+  <div class="rib-sep"></div>
+  <!-- Merge -->
+  <button class="rib-btn tb-btn-merge" id="ribMerge" onclick="toggleMergeCells()" disabled title="Merge / unmerge selected cells">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+    Merge
+  </button>
+  <div class="rib-sep"></div>
+  <!-- Text Align -->
+  <button class="rib-btn" id="ribAlignLeft" onclick="setAlign('left')" disabled title="Align Left">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="18" y2="18"/></svg>
+  </button>
+  <button class="rib-btn" id="ribAlignCenter" onclick="setAlign('center')" disabled title="Align Center">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+  </button>
+  <button class="rib-btn" id="ribAlignRight" onclick="setAlign('right')" disabled title="Align Right">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="9" y1="12" x2="21" y2="12"/><line x1="6" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <div class="rib-sep"></div>
+  <!-- Font Size -->
+  <label style="font-size:11px;color:var(--text-muted);padding:0 4px 0 2px;white-space:nowrap;">Size:</label>
+  <input id="ribFontSize" type="number" min="6" max="96" step="1" placeholder="14"
+    class="rib-font-size-input" title="Font size"
+    onchange="setFontSize(this.value)"
+    onkeydown="if(event.key==='Enter'){setFontSize(this.value);hot&&hot.getContainerParentElement().focus()}"
+    disabled/>
+  <div class="rib-sep"></div>
+  <!-- Bold / Italic / Underline -->
+  <button class="rib-btn rib-btn-fmt" id="ribBold" onclick="toggleBold()" disabled title="Bold (Ctrl+B)"><b>B</b></button>
+  <button class="rib-btn rib-btn-fmt" id="ribItalic" onclick="toggleItalic()" disabled title="Italic (Ctrl+I)"><i>I</i></button>
+  <button class="rib-btn rib-btn-fmt" id="ribUnderline" onclick="toggleUnderline()" disabled title="Underline (Ctrl+U)" style="text-decoration:underline;">U</button>
+  <div class="rib-sep"></div>
+  <!-- Cell Background Color -->
+  <label style="font-size:11px;color:var(--text-muted);padding:0 3px 0 2px;white-space:nowrap;">Fill:</label>
+  <div class="rib-color-wrap">
+    <input id="ribBgColor" type="color" value="#ffff00" class="rib-color-input"
+      title="Cell background color" disabled
+      onchange="setCellBgColor(this.value)"/>
+    <button class="rib-btn rib-color-clear" onclick="setCellBgColor('none')" disabled id="ribBgColorClear" title="Clear background color">✕</button>
+  </div>
+  <div class="rib-sep"></div>
+  <!-- Search -->
+  <button class="rib-btn" onclick="toggleSearch()" title="Search & Replace (Ctrl+F)">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    Find
+  </button>
+  <div class="rib-sep"></div>
+  <!-- Font size hint -->
+  <span style="font-size:11px;color:var(--text-muted);padding:0 6px;">Ctrl+C/V to copy-paste with format</span>
+</div>
+
 <!-- ── SHEET TABS ── -->
 <div class="sheet-tabs-bar" id="sheetTabsBar" style="display:none">
   <div class="sheet-tabs" id="sheetTabs"></div>
+  <button class="sheet-tab-add" id="btnAddSheet" onclick="openNewSheetModal()" title="New sheet">＋</button>
 </div>
 
 <!-- ── FORMULA BAR ── -->
 <div class="formula-bar" id="formulaBar" style="display:none">
   <span class="cell-ref" id="cellRef">A1</span>
   <div class="formula-sep"></div>
-  <input class="formula-input" id="formulaInput" type="text" placeholder="Cell value..." spellcheck="false"/>
+  <input class="formula-input" id="formulaInput" type="text" placeholder="Cell value…" spellcheck="false"/>
 </div>
 
 <!-- ── SEARCH BAR ── -->
 <div class="search-bar" id="searchBar" style="display:none">
-  <input id="searchInput" type="text" placeholder="Search..." spellcheck="false"/>
-  <input id="replaceInput" type="text" placeholder="Replace with..." spellcheck="false"/>
+  <input id="searchInput" type="text" placeholder="Search…" spellcheck="false"/>
+  <input id="replaceInput" type="text" placeholder="Replace with…" spellcheck="false"/>
   <button onclick="doSearch()">Find</button>
   <button onclick="doReplace()">Replace</button>
   <button onclick="doReplaceAll()">All</button>
@@ -141,16 +269,27 @@
     <div class="empty-icon">
       <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
     </div>
-    <h2>Open a Krutidev Excel File</h2>
-    <p>Upload an .xlsx or .xls file to start editing.</p>
-    <button class="btn-open" onclick="triggerUpload()">Open File</button>
-    <p class="hint-text">Or drag & drop anywhere · Ctrl+F to search</p>
+    <h2>Krutidev Spreadsheet Editor</h2>
+    <p>Open an existing Excel file or start a new sheet.</p>
+    <div class="new-sheet-chooser">
+      <button class="ns-btn" onclick="openNewSheetModal()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>New Sheet</span>
+        <span>Choose font type</span>
+      </button>
+      <button class="ns-btn" onclick="triggerUpload()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <span>Open File</span>
+        <span>.xlsx / .xls</span>
+      </button>
+    </div>
+    <p class="hint-text" style="margin-top:8px;">Ctrl+F to search · Ctrl+S to save</p>
   </div>
 
   <div class="loading-overlay" id="loadingOverlay" style="display:none">
     <div class="loading-box">
       <div class="loading-spinner"></div>
-      <p id="loadingText">Loading...</p>
+      <p id="loadingText">Loading…</p>
     </div>
   </div>
 
@@ -171,14 +310,13 @@
   <span class="status-right" id="statusEdited"></span>
 </div>
 
-<!-- Pass server-side vars to JS -->
 <script>
-  window.EDITOR_CONFIG = {
-    docId:  {{ ('"' + doc_id + '"') if doc_id else 'null' }},
-    access: '{{ access or "edit" }}',
-    title:  {{ ('"' + title + '"') if title else '"Untitled"' }}
-  };
+  window.EDITOR_CONFIG = {{ {
+    'docId':  doc_id,
+    'access': access or 'edit',
+    'title':  title or 'Untitled'
+  } | tojson }};
 </script>
-<script src="/static/editor.js"></script>
+<script src="/static/editor.js?v=69e01337"></script>
 </body>
 </html>

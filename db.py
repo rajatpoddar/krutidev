@@ -8,6 +8,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, List
 
 DB_PATH = Path(__file__).parent / 'data' / 'sheets.db'
 
@@ -16,6 +17,8 @@ def _conn():
     DB_PATH.parent.mkdir(exist_ok=True)
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     con.row_factory = sqlite3.Row
+    con.execute('PRAGMA journal_mode=WAL')   # better concurrent read performance
+    con.execute('PRAGMA synchronous=NORMAL') # safe + faster than FULL
     return con
 
 
@@ -29,28 +32,35 @@ def init_db():
             sheet_names TEXT NOT NULL DEFAULT '[]',
             access      TEXT NOT NULL DEFAULT 'edit',
             password    TEXT,
+            source_path TEXT,
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
         """)
+        # Migrate existing tables that lack source_path column
+        try:
+            con.execute("ALTER TABLE documents ADD COLUMN source_path TEXT")
+        except Exception:
+            pass  # Column already exists
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 def create_doc(title: str, sheets_data: dict, sheet_names: list,
-               access: str = 'edit', password: str = None) -> str:
+               access: str = 'edit', password: str = None,
+               source_path: str = None) -> str:
     doc_id = str(uuid.uuid4())
     now = _now()
     with _conn() as con:
         con.execute(
-            "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",
             (doc_id, title, json.dumps(sheets_data, ensure_ascii=False),
-             json.dumps(sheet_names), access, password, now, now)
+             json.dumps(sheet_names), access, password, source_path, now, now)
         )
     return doc_id
 
 
-def get_doc(doc_id: str) -> dict | None:
+def get_doc(doc_id: str) -> Optional[dict]:
     with _conn() as con:
         row = con.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
     if not row:
@@ -58,14 +68,27 @@ def get_doc(doc_id: str) -> dict | None:
     return _row_to_dict(row)
 
 
-def update_doc(doc_id: str, sheets_data: dict, sheet_names: list, title: str = None):
+def update_doc(doc_id: str, sheets_data: dict, sheet_names: list,
+               title: str = None, source_path: str = None):
     now = _now()
     with _conn() as con:
-        if title:
+        if title and source_path:
+            con.execute(
+                "UPDATE documents SET data=?, sheet_names=?, title=?, source_path=?, updated_at=? WHERE id=?",
+                (json.dumps(sheets_data, ensure_ascii=False),
+                 json.dumps(sheet_names), title, source_path, now, doc_id)
+            )
+        elif title:
             con.execute(
                 "UPDATE documents SET data=?, sheet_names=?, title=?, updated_at=? WHERE id=?",
                 (json.dumps(sheets_data, ensure_ascii=False),
                  json.dumps(sheet_names), title, now, doc_id)
+            )
+        elif source_path:
+            con.execute(
+                "UPDATE documents SET data=?, sheet_names=?, source_path=?, updated_at=? WHERE id=?",
+                (json.dumps(sheets_data, ensure_ascii=False),
+                 json.dumps(sheet_names), source_path, now, doc_id)
             )
         else:
             con.execute(
@@ -75,7 +98,7 @@ def update_doc(doc_id: str, sheets_data: dict, sheet_names: list, title: str = N
             )
 
 
-def list_docs(limit: int = 50) -> list[dict]:
+def list_docs(limit: int = 50) -> List[dict]:
     with _conn() as con:
         rows = con.execute(
             "SELECT id, title, access, created_at, updated_at FROM documents "
@@ -97,6 +120,8 @@ def _now() -> str:
 
 def _row_to_dict(row) -> dict:
     d = dict(row)
-    d['data']        = json.loads(d['data'])
+    data = json.loads(d['data'])
+    # Normalise: if data was accidentally stored as a list, reset to empty dict
+    d['data']        = data if isinstance(data, dict) else {}
     d['sheet_names'] = json.loads(d['sheet_names'])
     return d
