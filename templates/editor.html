@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="hi" data-theme="light">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{ title or 'Krutidev Editor' }}</title>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+  <link rel="stylesheet" href="/static/editor.css"/>
+  <style>
+    @font-face {
+      font-family: 'KrutiDev';
+      src: url('/static/fonts/KrutiDev010.ttf') format('truetype');
+      font-display: swap;
+    }
+  </style>
+</head>
+<body>
+
+<div id="toast" class="toast"></div>
+
+<!-- ── SHARE MODAL ── -->
+<div class="modal-overlay" id="shareModal" style="display:none" onclick="closeShareModal(event)">
+  <div class="modal share-modal">
+    <div class="modal-header">
+      <h3>Share Sheet</h3>
+      <button class="modal-close" onclick="closeShareModal()">✕</button>
+    </div>
+    <div class="share-body">
+      <label>Access</label>
+      <div class="access-toggle">
+        <button class="acc-btn active" id="accEdit" onclick="setAccess('edit')">✏️ Can Edit</button>
+        <button class="acc-btn" id="accView" onclick="setAccess('view')">👁 View Only</button>
+      </div>
+      <label>Password (optional)</label>
+      <input id="sharePwd" type="password" placeholder="Leave blank for no password" class="share-input"/>
+      <button class="btn-share-gen" id="btnGenLink" onclick="generateLink()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        Generate Link
+      </button>
+      <div id="shareLinkBox" style="display:none">
+        <div class="share-link-row">
+          <input id="shareLink" type="text" readonly class="share-link-input"/>
+          <button onclick="copyLink()" class="btn-copy">Copy</button>
+        </div>
+        <p class="share-hint">Anyone with this link can {{ 'edit' if access == 'edit' else 'view' }} this sheet.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── PASSWORD MODAL ── -->
+<div class="modal-overlay" id="pwdModal" style="display:none">
+  <div class="modal pwd-modal">
+    <div class="modal-header"><h3>🔒 Password Required</h3></div>
+    <div class="share-body">
+      <input id="pwdInput" type="password" placeholder="Enter password" class="share-input"/>
+      <button class="btn-share-gen" onclick="submitPassword()">Unlock</button>
+      <p id="pwdError" class="pwd-error" style="display:none">Incorrect password</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── TOPBAR ── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <a href="/" class="brand">
+      <span class="brand-k">क</span><span class="brand-arrow">→</span><span class="brand-u">क</span>
+    </a>
+    <input class="filename-input" id="titleInput" type="text"
+           value="{{ title or 'Untitled' }}" spellcheck="false"
+           onchange="onTitleChange()" title="Click to rename"/>
+  </div>
+
+  <div class="topbar-center">
+    <div class="users-bar" id="usersBar"></div>
+    <span class="autosave-indicator" id="autosaveIndicator"></span>
+  </div>
+
+  <div class="topbar-right">
+    <div class="toggle-group">
+      <button class="toggle-btn active" id="btnKrutidev" onclick="setFont('krutidev')">Krutidev</button>
+      <button class="toggle-btn" id="btnUnicode" onclick="setFont('unicode')">Unicode</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <button class="tb-btn" onclick="triggerUpload()" title="Upload Excel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Upload
+    </button>
+    <button class="tb-btn" id="btnAddRow" onclick="addRow()" disabled>+ Row</button>
+    <button class="tb-btn" id="btnDelRow" onclick="deleteSelectedRows()" disabled>− Row</button>
+    <div class="toolbar-sep"></div>
+    <button class="tb-btn tb-btn-share" id="btnShare" onclick="openShareModal()" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      Share
+    </button>
+    <button class="tb-btn tb-btn-save" id="btnSave" onclick="saveFile(false)" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Save
+    </button>
+    <button class="tb-btn tb-btn-convert" id="btnConvert" onclick="saveFile(true)" disabled>⇄ Convert</button>
+    <input type="file" id="fileInput" accept=".xlsx,.xls" hidden/>
+  </div>
+</header>
+
+<!-- ── SHEET TABS ── -->
+<div class="sheet-tabs-bar" id="sheetTabsBar" style="display:none">
+  <div class="sheet-tabs" id="sheetTabs"></div>
+</div>
+
+<!-- ── FORMULA BAR ── -->
+<div class="formula-bar" id="formulaBar" style="display:none">
+  <span class="cell-ref" id="cellRef">A1</span>
+  <div class="formula-sep"></div>
+  <input class="formula-input" id="formulaInput" type="text" placeholder="Cell value..." spellcheck="false"/>
+</div>
+
+<!-- ── SEARCH BAR ── -->
+<div class="search-bar" id="searchBar" style="display:none">
+  <input id="searchInput" type="text" placeholder="Search..." spellcheck="false"/>
+  <input id="replaceInput" type="text" placeholder="Replace with..." spellcheck="false"/>
+  <button onclick="doSearch()">Find</button>
+  <button onclick="doReplace()">Replace</button>
+  <button onclick="doReplaceAll()">All</button>
+  <button class="close-btn" onclick="toggleSearch()">✕</button>
+</div>
+
+<!-- ── EDITOR AREA ── -->
+<div class="editor-area">
+  <div class="drop-overlay" id="dropOverlay">
+    <div class="drop-overlay-inner">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p>Drop Excel file to open</p>
+    </div>
+  </div>
+
+  <div class="empty-state" id="emptyState">
+    <div class="empty-icon">
+      <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+    </div>
+    <h2>Open a Krutidev Excel File</h2>
+    <p>Upload an .xlsx or .xls file to start editing.</p>
+    <button class="btn-open" onclick="triggerUpload()">Open File</button>
+    <p class="hint-text">Or drag & drop anywhere · Ctrl+F to search</p>
+  </div>
+
+  <div class="loading-overlay" id="loadingOverlay" style="display:none">
+    <div class="loading-box">
+      <div class="loading-spinner"></div>
+      <p id="loadingText">Loading...</p>
+    </div>
+  </div>
+
+  <div id="gridContainer" style="display:none">
+    <div id="hot"></div>
+  </div>
+</div>
+
+<!-- ── STATUS BAR ── -->
+<div class="status-bar" id="statusBar" style="display:none">
+  <span id="statusCells">Ready</span>
+  <span class="status-sep"></span>
+  <span id="statusRows">0 rows</span>
+  <span class="status-sep"></span>
+  <span id="statusCols">0 cols</span>
+  <span class="status-sep"></span>
+  <span id="statusFont">Font: Krutidev</span>
+  <span class="status-right" id="statusEdited"></span>
+</div>
+
+<!-- Pass server-side vars to JS -->
+<script>
+  window.EDITOR_CONFIG = {
+    docId:  {{ ('"' + doc_id + '"') if doc_id else 'null' }},
+    access: '{{ access or "edit" }}',
+    title:  {{ ('"' + title + '"') if title else '"Untitled"' }}
+  };
+</script>
+<script src="/static/editor.js"></script>
+</body>
+</html>
